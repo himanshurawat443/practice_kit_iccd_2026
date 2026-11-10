@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pgflow"
+version = "0.1.0"
+description = "Proving Ground flow runner: build, checks, mutation analysis and PPA scoring for RTL submissions"
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6", "pyslang>=9", "cocotb>=2.0,<2.1"]
+
+[project.scripts]
+pgflow = "pgflow.cli:main"
+
+[tool.setuptools]
+packages = ["pgflow"]
+
+[tool.setuptools.package-data]
+pgflow = ["tcl/*.tcl"]
