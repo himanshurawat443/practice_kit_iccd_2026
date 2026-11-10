@@ -1,0 +1,73 @@
+# Proving Ground flow image (participant edition).
+#
+# Contents: OpenROAD + Yosys + sky130hd (from the OpenROAD-flow-scripts image),
+# Verilator 5, cocotb, SymbiYosys with yices / boolector / z3, and the `pgflow`
+# runner in public mode.
+#
+# Build from the flow/ directory:
+#   docker build -f docker/Dockerfile.public -t proving-ground/flow:public .
+
+ARG ORFS_IMAGE=openroad/orfs:latest
+
+###############################################################################
+# Stage 1: tools (shared by the public and server images)
+###############################################################################
+FROM ${ORFS_IMAGE} AS tools
+
+ARG VERILATOR_REF=v5.048
+ARG YICES_REF=yices-2.7.0
+ARG SBY_REF=main
+ARG COCOTB_VERSION=2.0.1
+ARG JOBS=16
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        autoconf gperf libgmp-dev ccache libfl-dev zlib1g-dev \
+        boolector zip unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Verilator 5 (Ubuntu 22.04 only ships 4.038, which lacks the SVA support we need)
+RUN git clone --depth 1 -b ${VERILATOR_REF} https://github.com/verilator/verilator /tmp/verilator \
+    && cd /tmp/verilator && autoconf && ./configure --prefix=/usr/local \
+    && make -j${JOBS} && make install && cd / && rm -rf /tmp/verilator
+
+# Yices 2 (default solver of the SymbiYosys smtbmc engine)
+RUN git clone --depth 1 -b ${YICES_REF} https://github.com/SRI-CSL/yices2 /tmp/yices2 \
+    && cd /tmp/yices2 && autoconf && ./configure --prefix=/usr/local \
+    && make -j${JOBS} && make install && cd / && rm -rf /tmp/yices2 && ldconfig
+
+# Yosys from ORFS on PATH for everything (sby, pgflow)
+ENV PATH=/OpenROAD-flow-scripts/tools/install/yosys/bin:/OpenROAD-flow-scripts/tools/install/OpenROAD/bin:${PATH}
+
+# SymbiYosys
+RUN git clone --depth 1 -b ${SBY_REF} https://github.com/YosysHQ/sby /tmp/sby \
+    && cd /tmp/sby && (git rev-parse HEAD > /usr/local/share/sby.commit) \
+    && make install PREFIX=/usr/local && cd / && rm -rf /tmp/sby
+
+# Python: cocotb, z3 binary, SystemVerilog parser for the mutator, YAML
+RUN pip3 install --no-cache-dir \
+        "cocotb==${COCOTB_VERSION}" "pytest>=8,<9" "z3-solver==4.15.4.0" \
+        "pyslang==10.0.0" "pyyaml>=6" "find_libpython"
+
+# Sanity: every tool answers
+RUN verilator --version && yosys -V && sby --help >/dev/null && yices-smt2 --version \
+    && boolector --version && z3 --version && openroad -version \
+    && python3 -c "import cocotb, pyslang; print('cocotb', cocotb.__version__)"
+
+ENV PGFLOW_ORFS=/OpenROAD-flow-scripts \
+    PGFLOW_IMAGE_KIND=tools
+WORKDIR /work
+
+###############################################################################
+# Stage 2: public flow image (no hidden-check or server modules)
+###############################################################################
+FROM tools AS public
+COPY pyproject.toml /opt/pgflow/pyproject.toml
+COPY pgflow /opt/pgflow/pgflow
+RUN pip3 install --no-cache-dir --no-deps /opt/pgflow && rm -rf /opt/pgflow \
+    && python3 -c "import importlib.util,sys; sys.exit(1 if importlib.util.find_spec('pgflow_server') else 0)"
+ENV PGFLOW_IMAGE_KIND=public
+LABEL org.opencontainers.image.title="Proving Ground flow image" \
+      org.opencontainers.image.description="Verilator, cocotb, Yosys, SymbiYosys, OpenROAD with sky130hd, and the pgflow runner (public mode)"
+ENTRYPOINT ["pgflow"]
+CMD ["--help"]
